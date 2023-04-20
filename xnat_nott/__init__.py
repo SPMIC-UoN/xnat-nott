@@ -12,11 +12,13 @@ import requests
 import sys
 import tempfile
 import urllib, urllib3
+import zipfile
 
 import xmltodict
 
 LOG = logging.getLogger(__name__)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+os.environ["CURL_CA_BUNDLE"] = "" # Hack to disable CA verification
 
 def setup_logging(options):
     if options.debug:
@@ -31,24 +33,28 @@ def get_version(options):
     except IOError:
         options.version = "(unknown)"
 
-def convert_dicoms(dicomdir, niftidir):
+def convert_dicoms(options, dicomdir, niftidir):
+    LOG.info(f"Doing NIFTI conversion")
+    dcm2niix_args = getattr(options, "dcm2niix_args", "-d 9 -m n -f %d_%q -z y -b y")
     os.makedirs(niftidir, exist_ok=True, mode=0o777)
-    cmd = "dcm2niix -o %s %s %s" % (niftidir, "-m n -f %d_%q -z y", dicomdir)
+    cmd = f'dcm2niix -o "{niftidir}" {dcm2niix_args} "{dicomdir}"'
     LOG.info(cmd)
     retval = os.system(cmd)
     if retval != 0:
         LOG.warning("DICOM->NIFTI conversion failed")
-        return None
-    return niftidir
+    return retval
 
 def get_host_url(options):
     """
     Get the 'real' URL for XNAT, since it may be subject to redirects and these mess up POST/PUT requests
     """
+    if not getattr(options, "host", None):
+        options.host = os.environ.get("XNAT_HOST", None)
     if not options.host:
-        options.host = os.environ["XNAT_HOST"]
+        raise RuntimeError("XNAT host not specified and not in environment")
     LOG.info(f"Checking host URL: {options.host}")
-    r = requests.get(options.host, verify=False, allow_redirects=False)
+    options.host = options.host.rstrip("/")
+    r = requests.get(options.host + "/", verify=False, allow_redirects=False)
     if r.status_code in (301, 302):
         new_host = r.headers['Location']
         LOG.info(f" - Redirect detected: {new_host}")
@@ -60,7 +66,7 @@ def get_host_url(options):
 
 def get_credentials(options):
     get_host_url(options)
-    if not options.user:
+    if not getattr(options, "user", None):
         options.user = os.environ.get("XNAT_USER", None)
     if not options.user:
         options.user = input("XNAT username: ")
@@ -108,6 +114,20 @@ def get_subjects(options, project):
     subjects = list(csv.DictReader(io.StringIO(csvdata)))
     return subjects
 
+def get_subject(options, project, subject_identifier):
+    """
+    Get subject details from specified project and subject label/ID
+
+    :param subject_identifier: Case insensitive identifier, may be ID or label
+    """
+    subject_identifier = subject_identifier.lower()
+    subjects = get_subjects(options, project)
+    for s in subjects:
+        if s["ID"].lower() == subject_identifier or s["label"].lower() == subject_identifier:
+            return s
+
+    raise RuntimeError(f"Subject not found: {subject_identifier}")
+
 def get_sessions(options, project, subject):
     """
     Get session details for specified project and subject
@@ -124,6 +144,20 @@ def get_sessions(options, project, subject):
         session["subject_label"] = subject['label']
         sessions.append(session)
     return sessions
+
+def get_session(options, project, subject, session_identifier):
+    """
+    Get session details from specified project, subject and session label/ID
+
+    :param session_identifier: Case insensitive identifier, may be ID or name
+    """
+    session_identifier = session_identifier.lower()
+    sessions = get_sessions(options, project, subject)
+    for s in sessions:
+        if s["ID"].lower() == session_identifier or s["label"].lower() == session_identifier:
+            return s
+
+    raise RuntimeError(f"Session not found: {session_identifier}")
 
 def get_all_sessions(options, project):
     """
@@ -185,6 +219,17 @@ def run_command(options, project, session, command, idx=""):
 #        LOG.warning(f"Failed to run command on session {session_id}: {r.text} after 10 attempts")
     LOG.info("Started successfully")
 
+def get_session_dicoms(options, session, outdir):
+    session_id = session["ID"]
+    LOG.info(f"Getting DICOMs for session {session_id}")
+    data_fname = xnat_download(
+        options,
+        f"data/experiments/{session_id}/scans/ALL/resources/DICOM/files",
+        params={"format" : "zip"}
+    )
+    with zipfile.ZipFile(data_fname, 'r') as z:
+        z.extractall(outdir)
+
 def xnat_login(options):
     """
     Attempt to use the auth service to log in but fall back on HTTP basic auth if not working
@@ -234,7 +279,7 @@ def xnat_download(options, url, params=None, local_fname=None):
     r = requests.get(url, verify=False, cookies=options.cookies, auth=options.auth, params=params, stream=True)
     LOG.debug(f" - status: {r.status_code}")
     if r.status_code == 401:
-        print(" - Session expired, will re-login and retry")
+        LOG.info(" - Session expired, will re-login and retry")
         xnat_login(options)
         r = requests.get(url, verify=False, cookies=options.cookies, auth=options.auth, params=params, stream=True)
     r.raise_for_status()
