@@ -20,11 +20,12 @@ LOG = logging.getLogger(__name__)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 os.environ["CURL_CA_BUNDLE"] = "" # Hack to disable CA verification
 
-def setup_logging(options):
+def setup_logging(options, **kwargs):
+    format=kwargs.get("format", "%(levelname)s: %(message)s")
     if options.debug:
-        logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
+        logging.basicConfig(stream=sys.stdout, level=logging.DEBUG, format=format)
     else:
-        logging.basicConfig(stream=sys.stdout, level=logging.INFO)
+        logging.basicConfig(stream=sys.stdout, level=logging.INFO, format=format)
 
 def get_version(options):
     try:
@@ -39,9 +40,9 @@ def convert_dicoms(options, dicomdir, niftidir):
     os.makedirs(niftidir, exist_ok=True, mode=0o777)
     cmd = f'dcm2niix -o "{niftidir}" {dcm2niix_args} "{dicomdir}"'
     LOG.info(cmd)
-    retval = os.system(cmd)
+    retval = os.system(cmd + f" 2>&1 1>{niftidir}/dcm2niix.log")
     if retval != 0:
-        LOG.warning("DICOM->NIFTI conversion failed")
+        LOG.warning(f"DICOM->NIFTI conversion returned error status {retval}")
     return retval
 
 def get_host_url(options):
@@ -216,7 +217,6 @@ def run_command(options, project, session, command, idx=""):
     url = f"xapi/projects/{project_id}/commands/{command_id}/wrappers/{wrapper_id}/launch/"
     params = {"session" : session_id}
     xnat_get(options, url, params=params, method="POST")
-#        LOG.warning(f"Failed to run command on session {session_id}: {r.text} after 10 attempts")
     LOG.info("Started successfully")
 
 def get_session_dicoms(options, session, outdir):
@@ -227,8 +227,11 @@ def get_session_dicoms(options, session, outdir):
         f"data/experiments/{session_id}/scans/ALL/resources/DICOM/files",
         params={"format" : "zip"}
     )
-    with zipfile.ZipFile(data_fname, 'r') as z:
-        z.extractall(outdir)
+    try:
+        with zipfile.ZipFile(data_fname, 'r') as z:
+            z.extractall(outdir)
+    finally:
+        os.remove(data_fname)
 
 def xnat_login(options):
     """
@@ -244,7 +247,8 @@ def xnat_login(options):
         options.cookies = {"JSESSIONID" : r.text}
         options.auth = None
     else:
-        LOG.info(f" - Failed to log in using auth service - will use basic auth instead")
+        LOG.warn(f" - Failed to log in using auth service, status {r.status_code} - will use basic auth instead")
+        LOG.warn(r.text)
         options.cookies = {}
         options.auth = (options.user, options.password)
     LOG.info("DONE login")
@@ -267,6 +271,10 @@ def xnat_get(options, url, params=None, method="GET"):
         r = method_impl(url, verify=False, cookies=options.cookies, auth=options.auth, params=params)
         if r.status_code == 200:
             break
+        if r.status_code == 401:
+            LOG.info(" - Session expired, will re-login and retry")
+            xnat_login(options)
+
     if r.status_code != 200:
         raise RuntimeError(f"Failed to execute {method} after 10 tries: {r.status_code} {r.text}")
     return r.text
