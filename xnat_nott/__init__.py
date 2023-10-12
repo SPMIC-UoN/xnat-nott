@@ -160,6 +160,46 @@ def get_session(options, project, subject, session_identifier):
 
     raise RuntimeError(f"Session not found: {session_identifier}")
 
+def get_all_from_session_id(options, session_id):
+    """
+    Get project, subject and session details from a session ID
+    """
+    LOG.debug(f"Getting session {session_id}")
+
+    params = {"xsiType": "xnat:mrSessionData", "format" : "xml"}
+    xmldata = xnat_get(options, f"data/experiments/{session_id}", params=params)
+    try:
+        session = xmltodict.parse(xmldata)["xnat:MRSession"]
+    except KeyError:
+        raise RuntimeError(f"Session not found: {session_id}")
+
+    project_id = session['@project']
+    project = get_project(options, project_id)
+    subject_id = session['xnat:subject_ID']
+    subject = get_subject(options, project, subject_id)
+    session = get_session(options, project, subject, session_id)
+
+    return project, subject, session
+
+def get_subject_from_id(options, session_id):
+    """
+    Get project, subject and session details from a session ID
+    """
+    project_id = project["ID"]
+    subject_id = subject["ID"]
+    LOG.debug(f"Getting sessions for project {project_id}, subject {subject_id}")
+    sessions = []
+
+    params = {"xsiType": "xnat:mrSessionData", "format" : "csv"}
+    csvdata = xnat_get(options, f"data/experiments/{session_id}", params=params)
+    for session in list(csv.DictReader(io.StringIO(csvdata))):
+        session["subject"] = subject_id
+        session["subject_label"] = subject['label']
+
+        return session
+
+    raise RuntimeError(f"Session not found: {session_id}")
+
 def get_all_sessions(options, project):
     """
     Get session details for all subjects in specified project
