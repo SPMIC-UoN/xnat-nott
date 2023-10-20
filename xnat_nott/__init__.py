@@ -181,25 +181,6 @@ def get_all_from_session_id(options, session_id):
 
     return project, subject, session
 
-def get_subject_from_id(options, session_id):
-    """
-    Get project, subject and session details from a session ID
-    """
-    project_id = project["ID"]
-    subject_id = subject["ID"]
-    LOG.debug(f"Getting sessions for project {project_id}, subject {subject_id}")
-    sessions = []
-
-    params = {"xsiType": "xnat:mrSessionData", "format" : "csv"}
-    csvdata = xnat_get(options, f"data/experiments/{session_id}", params=params)
-    for session in list(csv.DictReader(io.StringIO(csvdata))):
-        session["subject"] = subject_id
-        session["subject_label"] = subject['label']
-
-        return session
-
-    raise RuntimeError(f"Session not found: {session_id}")
-
 def get_all_sessions(options, project):
     """
     Get session details for all subjects in specified project
@@ -359,7 +340,6 @@ def xnat_upload(options, url, local_fname, replace_assessor=None):
 
     with open(local_fname, "r") as f:
         files = {'file': f}
-        url = f"{options.host}/{url}"
         while True:
             r = requests.post(url, files=files, auth=options.auth, cookies=options.cookies, verify=False, allow_redirects=False) 
             if r.status_code == 409:
