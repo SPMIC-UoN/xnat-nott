@@ -16,6 +16,8 @@ import zipfile
 
 import xmltodict
 
+from ._version import __version__
+
 LOG = logging.getLogger(__name__)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 os.environ["CURL_CA_BUNDLE"] = "" # Hack to disable CA verification
@@ -260,7 +262,7 @@ def xnat_login(options):
     """
     url = f"{options.host}/data/services/auth"
     auth_params={"username" : options.user, "password" : options.password}
-    LOG.info(f"Attempting log in: {url}")
+    LOG.info(f"Attempting log in: {url} using xnat-nott v{__version__}")
     r = requests.put(url, verify=False, data=urllib.parse.urlencode(auth_params))
     LOG.debug(f"status: {r.status_code}")
     if r.status_code == 200:
@@ -341,6 +343,7 @@ def xnat_upload(options, url, local_fname, replace_assessor=None):
     with open(local_fname, "r") as f:
         files = {'file': f}
         while True:
+            LOG.info(f"Posting to {url}")
             r = requests.post(url, files=files, auth=options.auth, cookies=options.cookies, verify=False, allow_redirects=False) 
             if r.status_code == 409:
                 LOG.info(" - File already exists")
